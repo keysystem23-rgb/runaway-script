@@ -15,7 +15,6 @@ local VindUI = loadstring(game:HttpGet(
 VindUI:PreloadIcons({ "Lucide", "Material", "Phosphor", "SF" })
 VindUI:SetScaleRange(0.75, 1.35)
 
---// Optional intro (set Enabled = false to skip)
 VindUI:ShowIntro({
 	Enabled = true,
 	Title = "RUNAWAYS",
@@ -30,7 +29,6 @@ VindUI:ShowIntro({
 	ReducedMotion = false,
 }):Wait()
 
---// Create window
 local Window = VindUI:CreateWindow({
 	Title = "RUNAWAYS",
 	Subtitle = "Interactive showcase",
@@ -57,7 +55,6 @@ VindUI:Notify({
 	Duration = 4,
 })
 
---// Tab groups
 local Main = Window:AddTabGroup({ Name = "RUNAWAYS" })
 local Tools = Window:AddTabGroup({ Name = "TELEPORT" })
 
@@ -65,10 +62,10 @@ local HomeTab = Main:AddTab({ Name = "Home", Icon = "Lucide:house" })
 local TeleportTab = Tools:AddTab({ Name = "Vehicles", Icon = "Lucide:car" })
 
 --// Kill All NPCs
-local function Mobs()
+local function killAllNPCs()
 	spawn(function()
-		_G.Mobs = true
-		while _G.Mobs do
+		_G.mb = true
+		while _G.mb do
 			wait()
 			pcall(function()
 				for _, descendant in pairs(workspace.NPCs:GetDescendants()) do
@@ -91,9 +88,9 @@ KillAllSection:AddToggle({
 	Flag = "toggle",
 	Default = false,
 	Callback = function(state)
-		_G.Mobs = state
+		_G.mb = state
 		if state then
-			Mobs()
+			killAllNPCs()
 		end
 	end,
 })
@@ -166,15 +163,17 @@ MovementSection:AddToggle({
 					params.FilterDescendantsInstances = { character }
 
 					local found = false
-					local checkPos = root.Position
 
 					for _ = 1, 20 do
-						checkPos = checkPos + Vector3.new(0, 150, 0)
+						root.CFrame = root.CFrame + Vector3.new(0, 150, 0)
 						task.wait()
 
-						local hit = workspace:Raycast(checkPos, Vector3.new(0, -2000, 0), params)
+						local hit = workspace:Raycast(root.Position, Vector3.new(0, -2000, 0), params)
 						if hit and hit.Instance and hit.Instance:IsA("BasePart") and hit.Instance.CanCollide then
-							root.CFrame = CFrame.new(hit.Position + Vector3.new(0, 4, 0))
+							root.CFrame = CFrame.new(
+								hit.Position + Vector3.new(0, 4, 0),
+								root.Position + root.CFrame.LookVector
+							)
 							found = true
 							break
 						end
@@ -259,7 +258,7 @@ TeleportSection:AddButton({
 	end,
 })
 
---// Vehicle Teleport (Teleport tab)
+--// Vehicle Teleport
 local vehicleNames = {}
 for _, vehicle in ipairs(workspace.Vehicles:GetChildren()) do
 	if vehicle:IsA("Model") or vehicle:IsA("BasePart") then
@@ -322,6 +321,9 @@ HomeTab:AddButton({
 		local event = ReplicatedStorage:WaitForChild("FlowClient")
 			:WaitForChild("ClientRunner"):WaitForChild("Event")
 
+		-- Set while cash collection is running, so checkpoint teleports wait
+		local busy = false
+
 		-- Loot / sensor loop
 		task.spawn(function()
 			while running and character.Parent do
@@ -330,24 +332,31 @@ HomeTab:AddButton({
 					event:FireServer("GameManager", "Replay")
 				end)
 
-				if root and root.Parent and typeof(firetouchinterest) == "function" then
+				if root and root.Parent then
 					local cash = workspace:FindFirstChild("Cash")
-					if cash then
-						for _, child in ipairs(cash:GetChildren()) do
-							local sensor = child:FindFirstChild("TouchSensor")
+					if cash and #cash:GetChildren() > 0 then
+						busy = true
+						for _, item in ipairs(cash:GetChildren()) do
+							if not running then break end
+							local sensor = item:FindFirstChild("TouchSensor")
 							if sensor then
-								firetouchinterest(root, sensor, true)
-								firetouchinterest(root, sensor, false)
+								character:PivotTo(sensor.CFrame)
+								if typeof(firetouchinterest) == "function" then
+									firetouchinterest(root, sensor, true)
+									firetouchinterest(root, sensor, false)
+								end
+								task.wait(0.15)
 							end
 						end
+						busy = false
 					end
 
 					local loot = workspace:FindFirstChild("Loot")
 					if loot then
-						for _, child in ipairs(loot:GetChildren()) do
-							local sensor = child:FindFirstChild("TouchSensor")
-								or (child:FindFirstChild("Cash") and child.Cash:FindFirstChild("TouchSensor"))
-							if sensor then
+						for _, item in ipairs(loot:GetChildren()) do
+							local sensor = item:FindFirstChild("TouchSensor")
+								or (item:FindFirstChild("Cash") and item.Cash:FindFirstChild("TouchSensor"))
+							if sensor and typeof(firetouchinterest) == "function" then
 								firetouchinterest(root, sensor, true)
 								firetouchinterest(root, sensor, false)
 							end
@@ -356,6 +365,21 @@ HomeTab:AddButton({
 				end
 			end
 		end)
+
+		-- Sleep for `duration` seconds, but pause while cash collection is busy
+		local function waitRespectingBusy(duration)
+			local start = tick()
+			while tick() - start < duration do
+				while busy do task.wait(0.05) end
+				task.wait(0.05)
+			end
+		end
+
+		-- Wait out busy state, then teleport
+		local function teleportRespectingBusy(cframe)
+			while busy do task.wait(0.05) end
+			character:PivotTo(cframe)
+		end
 
 		local function clearWorld()
 			local map = workspace:FindFirstChild("Map")
@@ -401,15 +425,15 @@ HomeTab:AddButton({
 			for _, child in ipairs(buildings:GetChildren()) do
 				if child.Name == "PawnShop" and child:IsA("Model") then
 					clearWorld()
-					character:PivotTo(child:GetPivot())
+					teleportRespectingBusy(child:GetPivot())
 					clearWorld()
-					task.wait(1)
+					waitRespectingBusy(0.8)
 				end
 			end
 		end
 
 		-- Determine checkpoints
-		local points = { 2500, 22000, 45000, 83700 }
+		local points = { 2500, 22000, 45000, 83700, 120000 }
 
 		local hud = LocalPlayer:FindFirstChild("PlayerGui")
 			and LocalPlayer.PlayerGui:FindFirstChild("HudGui")
@@ -426,14 +450,18 @@ HomeTab:AddButton({
 			end
 			if #found > 0 then
 				table.sort(found)
+				if #found < 5 then
+					found[#found + 1] = found[#found] + 25000
+				end
 				points = found
 			end
 		end
 
 		for _, z in ipairs(points) do
 			if not running then break end
-			character:PivotTo(CFrame.new(savedCFrame.Position.X, 2200, z))
-			task.wait(0.1)
+			teleportRespectingBusy(CFrame.new(savedCFrame.Position.X, 2200, z))
+			clearWorld()
+			waitRespectingBusy(0.25)
 		end
 
 		-- Move past the final door
@@ -442,17 +470,19 @@ HomeTab:AddButton({
 		local customs = buildings2 and buildings2:FindFirstChild("CustomsFinal")
 
 		if customs then
-			character:PivotTo(customs:GetPivot() * CFrame.new(0, 10, 1500))
+			teleportRespectingBusy(customs:GetPivot() * CFrame.new(0, 10, 1500))
 		else
-			character:PivotTo(CFrame.new(savedCFrame.Position.X, 2200, points[#points] + 1500))
+			teleportRespectingBusy(CFrame.new(savedCFrame.Position.X, 2200, points[#points] + 2500))
 		end
 
-		task.wait(0.8)
+		clearWorld()
+		waitRespectingBusy(2)
+
 		running = false
 		get5StarsRunning = false
 
 		if character.Parent then
-			character:PivotTo(savedCFrame)
+			teleportRespectingBusy(savedCFrame)
 		end
 
 		VindUI:Notify({
