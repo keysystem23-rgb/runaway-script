@@ -3,7 +3,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -12,11 +11,13 @@ local VindUI = loadstring(game:HttpGet(
 	"https://raw.githubusercontent.com/Skinny-yz/vindUI-Test/main/full.luau"
 ))()
 
+VindUI:SetTheme("Dark")
 VindUI:PreloadIcons({ "Lucide", "Material", "Phosphor", "SF" })
 VindUI:SetScaleRange(0.75, 1.35)
 
+-- Intro disabled by default — re-enable if you want the animation.
 VindUI:ShowIntro({
-	Enabled = true,
+	Enabled = false,
 	Title = "RUNAWAYS",
 	Eyebrow = "WELCOME BACK",
 	Subtitle = "Preparing your workspace...",
@@ -31,7 +32,7 @@ VindUI:ShowIntro({
 
 local Window = VindUI:CreateWindow({
 	Title = "RUNAWAYS",
-	Subtitle = "Interactive showcase",
+	Subtitle = "v" .. tostring(VindUI.Version),
 	Icon = "Lucide:sparkles",
 	Size = UDim2.fromOffset(640, 455),
 	MinSize = Vector2.new(500, 360),
@@ -55,11 +56,12 @@ VindUI:Notify({
 	Duration = 4,
 })
 
-local Main = Window:AddTabGroup({ Name = "RUNAWAYS" })
-local Tools = Window:AddTabGroup({ Name = "TELEPORT" })
+--// Tabs
+local MainGroup = Window:AddTabGroup({ Name = "RUNAWAYS" })
+local ToolsGroup = Window:AddTabGroup({ Name = "TELEPORT" })
 
-local HomeTab = Main:AddTab({ Name = "Home", Icon = "Lucide:house" })
-local TeleportTab = Tools:AddTab({ Name = "Vehicles", Icon = "Lucide:car" })
+local HomeTab = MainGroup:AddTab({ Name = "Home", Icon = "Lucide:house" })
+local VehicleTab = ToolsGroup:AddTab({ Name = "Vehicles", Icon = "Lucide:car" })
 
 --// Kill All NPCs
 local function killAllNPCs()
@@ -82,9 +84,16 @@ local function killAllNPCs()
 	end)
 end
 
-local KillAllSection = HomeTab:AddSection("Combat", "Lucide:sword")
-KillAllSection:AddToggle({
+local Combat = HomeTab:AddCollapsibleSection({
+	Title = "Combat",
+	Icon = "Lucide:sword",
+	Collapsed = false,
+})
+
+Combat:AddToggle({
 	Text = "KillAll NPCs",
+	Description = "Continuously damages every NPC until dead.",
+	Icon = "Lucide:sword",
 	Flag = "toggle",
 	Default = false,
 	Callback = function(state)
@@ -95,16 +104,24 @@ KillAllSection:AddToggle({
 	end,
 })
 
---// Walk Speed (TP Walk)
+--// Movement
 local walkSpeed = 1
 
-local MovementSection = HomeTab:AddSection("Movement", "Lucide:move")
-MovementSection:AddSlider({
+local Movement = HomeTab:AddCollapsibleSection({
+	Title = "Movement",
+	Icon = "Lucide:move",
+	Collapsed = false,
+})
+
+Movement:AddSlider({
 	Text = "Walk Speed",
+	Description = "Scales horizontal movement via TranslateBy.",
+	Icon = "Lucide:gauge",
 	Flag = "tpwalk_speed",
 	Min = 1,
 	Max = 100,
 	Default = 1,
+	Increment = 1,
 	Callback = function(value)
 		walkSpeed = tonumber(value) or 1
 	end,
@@ -123,14 +140,15 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
---// NoClip
 local noclipConnection
 local lastSafeCFrame
 local antiVoidBusy = false
 
-MovementSection:AddToggle({
+Movement:AddToggle({
 	Text = "NoClip",
-	Flag = "toggle",
+	Description = "Disables collision with an anti-void fallback.",
+	Icon = "Lucide:ghost",
+	Flag = "noclip",
 	Default = false,
 	Callback = function(enabled)
 		if enabled then
@@ -208,9 +226,9 @@ MovementSection:AddToggle({
 	end,
 })
 
---// Infinite Jump
-MovementSection:AddButton({
+Movement:AddButton({
 	Text = "Inf Jump",
+	Description = "Allows jumping mid-air.",
 	Icon = "Lucide:arrow-up-circle",
 	Callback = function()
 		UserInputService.JumpRequest:Connect(function()
@@ -223,11 +241,16 @@ MovementSection:AddButton({
 	end,
 })
 
---// Goto Final Door
-local TeleportSection = HomeTab:AddSection("Teleport", "Lucide:map-pin")
+--// Teleport — FinalDoor
+local Teleport = HomeTab:AddCollapsibleSection({
+	Title = "Teleport",
+	Icon = "Lucide:map-pin",
+	Collapsed = false,
+})
 
-TeleportSection:AddButton({
+Teleport:AddButton({
 	Text = "Goto FinalDoor",
+	Description = "Teleports near the final door and fires its prompt.",
 	Icon = "Lucide:door-open",
 	Callback = function()
 		local character = LocalPlayer.Character
@@ -269,19 +292,27 @@ table.sort(vehicleNames)
 
 local selectedVehicle
 
-local VehicleSection = TeleportTab:AddSection("Vehicles", "Lucide:car")
-VehicleSection:AddDropdown({
+local Vehicles = VehicleTab:AddCollapsibleSection({
+	Title = "Vehicles",
+	Icon = "Lucide:car",
+	Collapsed = false,
+})
+
+Vehicles:AddDropdown({
 	Text = "Choose a Vehicle",
+	Description = "Populated from workspace.Vehicles.",
+	Icon = "Lucide:list",
 	Flag = "vehicle_list",
-	Default = "==Select Vehicle==",
 	Options = vehicleNames,
+	Default = vehicleNames[1] or "==Select Vehicle==",
 	Callback = function(name)
 		selectedVehicle = name
 	end,
 })
 
-VehicleSection:AddButton({
+Vehicles:AddButton({
 	Text = "Teleport to Vehicle",
+	Description = "Teleports you above the selected vehicle.",
 	Icon = "Lucide:navigation",
 	Callback = function()
 		if not selectedVehicle then return end
@@ -301,8 +332,15 @@ VehicleSection:AddButton({
 --// GET 5 STARS
 local get5StarsRunning = false
 
-HomeTab:AddButton({
+local Automation = HomeTab:AddCollapsibleSection({
+	Title = "Automation",
+	Icon = "Lucide:star",
+	Collapsed = false,
+})
+
+Automation:AddButton({
 	Text = "GET 5 STARS",
+	Description = "Runs the full multi-stage completion script.",
 	Icon = "Lucide:star",
 	Callback = function()
 		if get5StarsRunning then return end
@@ -321,7 +359,7 @@ HomeTab:AddButton({
 		local event = ReplicatedStorage:WaitForChild("FlowClient")
 			:WaitForChild("ClientRunner"):WaitForChild("Event")
 
-		-- Set while cash collection is running, so checkpoint teleports wait
+		-- Set while cash collection runs, so checkpoint teleports wait for it
 		local busy = false
 
 		-- Loot / sensor loop
@@ -366,7 +404,6 @@ HomeTab:AddButton({
 			end
 		end)
 
-		-- Sleep for `duration` seconds, but pause while cash collection is busy
 		local function waitRespectingBusy(duration)
 			local start = tick()
 			while tick() - start < duration do
@@ -375,7 +412,6 @@ HomeTab:AddButton({
 			end
 		end
 
-		-- Wait out busy state, then teleport
 		local function teleportRespectingBusy(cframe)
 			while busy do task.wait(0.05) end
 			character:PivotTo(cframe)
