@@ -79,27 +79,6 @@ local function getVehicle()
     if not vehicle or not vehicle:FindFirstChild("VehicleProperty") then return nil end
     return vehicle
 end
---// Prefer the player's own vehicle, tagged by the game as "MainVehicle"
-local function getMainVehicle()
-    for _, v in ipairs(CollectionService:GetTagged("MainVehicle")) do
-        if v:IsA("Model") and v:IsDescendantOf(workspace) then
-            return v
-        end
-    end
-end
-
-local function isBannedVehicle(v)
-    local name = v.Name:lower()
-    if name:find("police", 1, true) then return true end
-    if name:find("cop", 1, true) then return true end
-    if name:find("npc", 1, true) then return true end
-    if name:find("traffic", 1, true) then return true end
-    if name:find("heli", 1, true) then return true end
-    if name:find("ambulance", 1, true) then return true end
-    if name:find("firetruck", 1, true) then return true end
-    return false
-end
-
 local function findNearestVehicle(maxDist)
     local root = getRoot()
     if not root then return nil end
@@ -108,11 +87,7 @@ local function findNearestVehicle(maxDist)
     maxDist = maxDist or 2000
     local nearest, nearestDist = nil, maxDist
     for _, v in folder:GetChildren() do
-        if v:IsA("Model")
-            and v:FindFirstChild("VehicleProperty")
-            and not CollectionService:HasTag(v, "MainVehicle")
-            and not isBannedVehicle(v)
-        then
+        if v:IsA("Model") and v:FindFirstChild("VehicleProperty") then
             local d = (v:GetPivot().Position - root.Position).Magnitude
             if d < nearestDist then nearest = v; nearestDist = d end
         end
@@ -184,7 +159,19 @@ local function getAllLoot()
     return items
 end
 
---// ================== BRING ALL (with diagnostics) ==================
+local function getPickupCFrame(root, part)
+    local offset = root.Position - part.Position
+    local dir = Vector3.new(offset.X, 0, offset.Z)
+    dir = dir.Magnitude > 0.1 and dir.Unit or Vector3.new(0, 0, 1)
+    local pos = part.Position + dir * 3 + Vector3.new(0, 2.5, 0)
+    return CFrame.lookAt(pos, Vector3.new(part.Position.X, pos.Y, part.Position.Z))
+end
+
+--// ================== BRING ALL (hybrid) ==================
+local PULL_TIMEOUT_NEAR = 1.0    -- timeout when already near the item
+local PULL_TIMEOUT_FAR = 0.4     -- short timeout for the "pull from afar" attempt
+local NEAR_DISTANCE = 12         -- studs; under this, always try pull directly
+
 local function isNetworkOwner(part)
     if type(isnetworkowner) ~= "function" then return true end
     local ok, owns = pcall(isnetworkowner, part)
@@ -192,14 +179,13 @@ local function isNetworkOwner(part)
 end
 
 local function requestOwnership(part, timeout)
-    if not flow.Loot then return false, "No flow.Loot" end
-    timeout = timeout or 1.5
+    if not flow.Loot then return false end
+    timeout = timeout or PULL_TIMEOUT_NEAR
 
     if type(flow.Loot.OwnNetworkRequestAsync) == "function" then
         local ok, granted = pcall(flow.Loot.OwnNetworkRequestAsync, part, true)
         if ok and granted then return true end
     end
-
     if type(flow.Loot.OwnNetworkRequest) == "function" then
         pcall(flow.Loot.OwnNetworkRequest, part, true)
     end
@@ -209,8 +195,7 @@ local function requestOwnership(part, timeout)
         RunService.Heartbeat:Wait()
         if isNetworkOwner(part) then return true end
     until os.clock() >= expires
-
-    return false, "Ownership timeout"
+    return false
 end
 
 local function releaseOwnership(part)
@@ -225,12 +210,7 @@ local function getGridCFrame(rootCFrame, index)
     return rootCFrame * CFrame.new((column - 1.5) * 4, 2, -7 - row * 4)
 end
 
-local function tryEquip(item, baseCFrame, index)
-    if not item.Parent then return false, "Item removed" end
-    local part = item.PrimaryPart
-    if not part or not part.Parent then return false, "No PrimaryPart" end
-
-    -- Handle Attachable loot: break the weld before requesting ownership
+local function unweld(item, part)
     if CollectionService:HasTag(item, "Attachable") then
         if type(flow.Loot.WeldDetach) == "function" then
             pcall(flow.Loot.WeldDetach, part)
@@ -239,45 +219,62 @@ local function tryEquip(item, baseCFrame, index)
         if weld then pcall(function() weld:Destroy() end) end
         task.wait(0.05)
     end
+end
 
-    -- Try once, retry once on failure with a longer timeout
-    for attempt = 1, 2 do
-        local owned, ownErr = requestOwnership(part, attempt == 1 and 0.75 or 1.5)
-        if not owned then
-            if attempt == 2 then return false, ownErr or "Ownership failed" end
-        else
-            -- Move it to the player's grid (player stays put)
+-- Returns: success, reason, method ("pull" or "tp")
+local function tryEquipItem(item, character, root, baseCFrame, index)
+    if not item.Parent then return false, "Item removed", nil end
+    local part = item.PrimaryPart
+    if not part or not part.Parent then return false, "No PrimaryPart", nil end
+
+    unweld(item, part)
+
+    local distance = (part.Position - root.Position).Magnitude
+
+    -- Phase 1: try pulling from current position (only if close enough to be plausible)
+    if distance <= NEAR_DISTANCE then
+        if requestOwnership(part, PULL_TIMEOUT_NEAR) then
             local target = getGridCFrame(baseCFrame, index)
-            local moved = pcall(function()
+            pcall(function()
                 item:PivotTo(target * part.CFrame:Inverse() * item:GetPivot())
                 part.AssemblyLinearVelocity = Vector3.zero
                 part.AssemblyAngularVelocity = Vector3.zero
             end)
-            if not moved then
-                releaseOwnership(part)
-                if attempt == 2 then return false, "PivotTo failed" end
-            else
-                -- Give the server a tick to register the new position
-                RunService.Heartbeat:Wait()
-                RunService.Heartbeat:Wait()
-
-                local ok, result = pcall(flow.Loot.LootEquip, part)
-                releaseOwnership(part)
-
-                if ok and result == "Success" then
-                    return true
-                end
-                if ok and result == "AlreadyOwned" then
-                    return true  -- treat as success; already in inventory
-                end
-
-                if attempt == 2 then
-                    return false, "LootEquip: " .. tostring(result)
-                end
+            RunService.Heartbeat:Wait()
+            RunService.Heartbeat:Wait()
+            local ok, result = pcall(flow.Loot.LootEquip, part)
+            releaseOwnership(part)
+            if ok and (result == "Success" or result == "AlreadyOwned") then
+                return true, nil, "pull"
             end
+            return false, "LootEquip: " .. tostring(result), nil
         end
     end
-    return false, "Unknown"
+
+    -- Phase 2: teleport to the item (fallback)
+    character:PivotTo(getPickupCFrame(root, part))
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    task.wait(0.15)
+
+    if not item.Parent or not part.Parent then
+        return false, "Item removed during TP", nil
+    end
+
+    unweld(item, part)
+
+    local owned = requestOwnership(part, PULL_TIMEOUT_NEAR)
+    if not owned then
+        return false, "Ownership timeout", nil
+    end
+
+    local ok, result = pcall(flow.Loot.LootEquip, part)
+    releaseOwnership(part)
+
+    if ok and (result == "Success" or result == "AlreadyOwned") then
+        return true, nil, "tp"
+    end
+    return false, "LootEquip: " .. tostring(result), nil
 end
 
 local function bringAllLoot()
@@ -297,22 +294,30 @@ local function bringAllLoot()
             return
         end
 
-        local baseCFrame = root.CFrame
+        local savedCFrame = c:GetPivot()
         local items = getAllLoot()
-        local brought, failed = 0, 0
+
+        local broughtPull, broughtTp, failed = 0, 0, 0
         local failureReasons = {}
 
         VindUI:Notify({
             Title = "Bring All",
-            Text = "Pulling " .. #items .. " items...",
+            Text = "Processing " .. #items .. " items...",
             Type = "info",
             Duration = 2,
         })
 
         for i, item in ipairs(items) do
-            local ok, reason = tryEquip(item, baseCFrame, brought + 1)
+            -- Reset to saved position before each item so the grid stays consistent
+            if c.Parent and root.Parent then
+                c:PivotTo(savedCFrame)
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            local ok, reason, method = tryEquipItem(item, c, root, savedCFrame, broughtPull + broughtTp + 1)
             if ok then
-                brought += 1
+                if method == "tp" then broughtTp += 1 else broughtPull += 1 end
             else
                 failed += 1
                 reason = reason or "Unknown"
@@ -322,6 +327,7 @@ local function bringAllLoot()
             task.wait(0.04)
         end
 
+        if c.Parent then c:PivotTo(savedCFrame) end
         busy = false
 
         local summaryParts = {}
@@ -330,7 +336,11 @@ local function bringAllLoot()
         end
         table.sort(summaryParts)
 
-        local summaryText = "Brought " .. brought
+        local brought = broughtPull + broughtTp
+        local summaryText = string.format(
+            "Brought %d (pull %d, tp %d)",
+            brought, broughtPull, broughtTp
+        )
         if failed > 0 then
             summaryText = summaryText .. " | Failed " .. failed
             if #summaryParts > 0 then
@@ -344,13 +354,6 @@ local function bringAllLoot()
             Type = brought > 0 and "success" or "warning",
             Duration = 6,
         })
-
-        if failed > 0 then
-            print("[BringAll] Failure breakdown:")
-            for reason, count in pairs(failureReasons) do
-                print(string.format("  %s  x%d", reason, count))
-            end
-        end
     end)
 end
 
@@ -423,7 +426,7 @@ local VehicleSection = MainTab:AddCollapsibleSection({
 
 VehicleSection:AddButton({
     Text = "Teleport to Car",
-    Description = "Jumps to your own car. Falls back to the nearest non-police vehicle if yours isn't out.",
+    Description = "Jumps to your current car, or the nearest one within 2000 studs.",
     Icon = "Lucide:navigation",
     Callback = function()
         local root = getRoot()
@@ -431,27 +434,13 @@ VehicleSection:AddButton({
             VindUI:Notify({ Title = "Vehicle", Text = "No character.", Type = "error" })
             return
         end
-
-        -- Priority: current vehicle -> "MainVehicle" tag -> nearest non-police
-        local v = getVehicle() or getMainVehicle() or findNearestVehicle(2000)
-
+        local v = getVehicle() or findNearestVehicle(2000)
         if not v then
-            VindUI:Notify({
-                Title = "Vehicle",
-                Text = "No owned vehicle found. Sit in your car once so the game registers it.",
-                Type = "error",
-                Duration = 4,
-            })
+            VindUI:Notify({ Title = "Vehicle", Text = "No vehicle found nearby.", Type = "error" })
             return
         end
-
         root.CFrame = v:GetPivot() * CFrame.new(0, 5, 0)
-        VindUI:Notify({
-            Title = "Vehicle",
-            Text = "Teleported to " .. v.Name .. ".",
-            Type = "success",
-            Duration = 2,
-        })
+        VindUI:Notify({ Title = "Vehicle", Text = "Teleported to " .. v.Name .. ".", Type = "success", Duration = 2 })
     end,
 })
 
