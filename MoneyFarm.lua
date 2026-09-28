@@ -180,17 +180,41 @@ local function getVehicle()
     return vehicle
 end
 
+--// Prefer the player's own vehicle, tagged by the game as "MainVehicle"
+local function getMainVehicle()
+    for _, v in ipairs(CollectionService:GetTagged("MainVehicle")) do
+        if v:IsA("Model") and v:IsDescendantOf(workspace) then
+            return v
+        end
+    end
+end
+
+local function isBannedVehicle(v)
+    local name = v.Name:lower()
+    if name:find("police", 1, true) then return true end
+    if name:find("cop", 1, true) then return true end
+    if name:find("npc", 1, true) then return true end
+    if name:find("traffic", 1, true) then return true end
+    if name:find("heli", 1, true) then return true end
+    if name:find("ambulance", 1, true) then return true end
+    if name:find("firetruck", 1, true) then return true end
+    return false
+end
+
 local function findNearestVehicle(maxDist)
     local root = getRoot()
     if not root then return nil end
-    local vehiclesFolder = workspace:FindFirstChild("Vehicles")
-    if not vehiclesFolder then return nil end
-    maxDist = maxDist or 500
+    local folder = workspace:FindFirstChild("Vehicles")
+    if not folder then return nil end
+    maxDist = maxDist or 2000
     local nearest, nearestDist = nil, maxDist
-    for _, v in vehiclesFolder:GetChildren() do
-        if v:IsA("Model") and v:FindFirstChild("VehicleProperty") then
-            local pivot = v:GetPivot().Position
-            local d = (pivot - root.Position).Magnitude
+    for _, v in folder:GetChildren() do
+        if v:IsA("Model")
+            and v:FindFirstChild("VehicleProperty")
+            and not CollectionService:HasTag(v, "MainVehicle")
+            and not isBannedVehicle(v)
+        then
+            local d = (v:GetPivot().Position - root.Position).Magnitude
             if d < nearestDist then nearest = v; nearestDist = d end
         end
     end
@@ -368,7 +392,7 @@ local Vehicles = VehicleTab:AddCollapsibleSection({
 
 Vehicles:AddButton({
     Text = "Teleport to Car",
-    Description = "Teleports you to your current car, or the nearest one if you're not in a vehicle.",
+    Description = "Jumps to your own car. Falls back to the nearest non-police vehicle if yours isn't out.",
     Icon = "Lucide:navigation",
     Callback = function()
         local root = getRoot()
@@ -376,14 +400,27 @@ Vehicles:AddButton({
             VindUI:Notify({ Title = "Vehicle", Text = "No character.", Type = "error" })
             return
         end
-        local v = getVehicle() or findNearestVehicle(2000)
+
+        -- Priority: current vehicle -> "MainVehicle" tag -> nearest non-police
+        local v = getVehicle() or getMainVehicle() or findNearestVehicle(2000)
+
         if not v then
-            VindUI:Notify({ Title = "Vehicle", Text = "No vehicle found nearby.", Type = "error" })
+            VindUI:Notify({
+                Title = "Vehicle",
+                Text = "No owned vehicle found. Sit in your car once so the game registers it.",
+                Type = "error",
+                Duration = 4,
+            })
             return
         end
-        local pivot = v:GetPivot()
-        root.CFrame = pivot * CFrame.new(0, 5, 0)
-        VindUI:Notify({ Title = "Vehicle", Text = "Teleported to " .. v.Name .. ".", Type = "success", Duration = 2 })
+
+        root.CFrame = v:GetPivot() * CFrame.new(0, 5, 0)
+        VindUI:Notify({
+            Title = "Vehicle",
+            Text = "Teleported to " .. v.Name .. ".",
+            Type = "success",
+            Duration = 2,
+        })
     end,
 })
 
